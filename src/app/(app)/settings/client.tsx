@@ -5,7 +5,6 @@ import { useForm } from "react-hook-form"
 import { zodResolver } from "@hookform/resolvers/zod"
 import { z } from "zod"
 import Link from "next/link"
-import { useRouter } from "next/navigation"
 import { Button } from "@/components/ui/button"
 import {
   Form,
@@ -18,13 +17,12 @@ import {
 } from "@/components/ui/form"
 import { Input } from "@/components/ui/input"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle, CardFooter } from "@/components/ui/card"
-import { Separator } from "@/components/ui/separator"
 import { Switch } from "@/components/ui/switch"
 import { useToast } from "@/hooks/use-toast"
-import { Youtube, AlertCircle, CheckCircle, ShieldAlert, KeyRound, Send, Bot } from "lucide-react"
+import { Youtube, AlertCircle, CheckCircle, ShieldAlert, Bot } from "lucide-react"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { useEffect, useState } from "react"
-import { Dialog, DialogClose, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog"
+import { useAuth } from "@/hooks/use-auth"
 
 
 const youtubeSchema = z.object({
@@ -39,14 +37,6 @@ const monetizationSchema = z.object({
   overlayAds: z.boolean().default(true),
 })
 
-const changePasswordSchema = z.object({
-    newPassword: z.string().min(8, "New password must be at least 8 characters."),
-    confirmPassword: z.string()
-}).refine(data => data.newPassword === data.confirmPassword, {
-    message: "New passwords do not match.",
-    path: ["confirmPassword"],
-});
-
 const autonomousSchema = z.object({
     enabled: z.boolean().default(false),
 });
@@ -54,16 +44,8 @@ const autonomousSchema = z.object({
 
 export default function SettingsClient() {
   const { toast } = useToast()
-  const router = useRouter();
+  const { isActivated } = useAuth();
   const [connectedChannelId, setConnectedChannelId] = useState<string | null>(null);
-  const [isActivated, setIsActivated] = useState(false);
-
-  useEffect(() => {
-    const email = localStorage.getItem("user_email");
-    const adminEmails = JSON.parse(localStorage.getItem("admin_emails") || "[]");
-    const activated = (email && localStorage.getItem(`user_activated_${email}`) === "true") || (email && adminEmails.includes(email));
-    setIsActivated(activated);
-  }, []);
 
   const youtubeForm = useForm<z.infer<typeof youtubeSchema>>({
     resolver: zodResolver(youtubeSchema),
@@ -81,14 +63,6 @@ export default function SettingsClient() {
       displayAds: true,
       overlayAds: true,
     },
-  })
-
-  const passwordForm = useForm<z.infer<typeof changePasswordSchema>>({
-    resolver: zodResolver(changePasswordSchema),
-    defaultValues: {
-        newPassword: "",
-        confirmPassword: ""
-    }
   })
 
   const autonomousForm = useForm<z.infer<typeof autonomousSchema>>({
@@ -146,25 +120,6 @@ export default function SettingsClient() {
       description: "Your new monetization settings have been successfully saved.",
     })
   }
-
-  function onChangePasswordSubmit(data: z.infer<typeof changePasswordSchema>) {
-    const userEmail = localStorage.getItem("user_email");
-    if (!userEmail) {
-        toast({ title: "Error", description: "Could not find your email. Please log in again.", variant: "destructive"});
-        return;
-    }
-
-    try {
-        const authData = JSON.parse(localStorage.getItem(`user_auth_${userEmail}`) || '{}');
-        authData.password = data.newPassword;
-        localStorage.setItem(`user_auth_${userEmail}`, JSON.stringify(authData));
-        toast({ title: "Password Changed", description: "Your password has been successfully updated."});
-        passwordForm.reset();
-        
-    } catch(e) {
-        toast({ title: "Update Failed", description: "An error occurred changing your password.", variant: "destructive" });
-    }
-  }
   
   function onAutonomousSubmit(data: z.infer<typeof autonomousSchema>) {
     localStorage.setItem("autonomous_mode_enabled", data.enabled.toString());
@@ -215,9 +170,9 @@ export default function SettingsClient() {
                         <CardContent className="space-y-4">
                             <Alert variant="destructive">
                                 <ShieldAlert className="h-4 w-4" />
-                                <AlertTitle>Security Note</AlertTitle>
+                                <AlertTitle>API Key Security</AlertTitle>
                                 <AlertDescription>
-                                    For this prototype, your API key is stored in your browser's local storage. In a real-world, public application, API keys must be stored securely on a server-side backend to prevent unauthorized access.
+                                    For this project, your API key is stored in your browser's local storage for simplicity. In a real-world, public application, API keys must be stored securely on a server-side backend to prevent unauthorized access.
                                 </AlertDescription>
                             </Alert>
                             <FormField
@@ -274,9 +229,9 @@ export default function SettingsClient() {
                         <CardContent className="space-y-4">
                              <Alert variant="destructive">
                                 <ShieldAlert className="h-4 w-4" />
-                                <AlertTitle>Feature Simulation</AlertTitle>
+                                <AlertTitle>How Autonomous Mode Works</AlertTitle>
                                 <AlertDescription>
-                                   In a real application, enabling this feature would activate a daily scheduled job on a server to run the 'Auto-Pilot' logic. This prototype simulates the setting, but does not perform background tasks.
+                                   When enabled, this feature checks if you have been inactive for over two days. If so, it automatically runs the Auto-Pilot to generate new content. This check happens when the application loads. In a production environment, this would typically be handled by a scheduled job on a server (e.g., a Cron job).
                                 </AlertDescription>
                             </Alert>
                             <FormField
@@ -287,7 +242,7 @@ export default function SettingsClient() {
                                         <div className="space-y-0.5">
                                             <FormLabel>Enable Autonomous Operation</FormLabel>
                                             <FormDescription>
-                                                The AI will follow the content schedule automatically every day.
+                                                The AI will follow the content schedule if you are inactive.
                                             </FormDescription>
                                         </div>
                                         <FormControl>
@@ -308,55 +263,6 @@ export default function SettingsClient() {
             </form>
         </Form>
         
-        <Form {...passwordForm}>
-            <form onSubmit={passwordForm.handleSubmit(onChangePasswordSubmit)} className="space-y-8">
-                 <fieldset disabled={!isActivated}>
-                    <Card>
-                        <CardHeader>
-                            <div className="flex items-center gap-2">
-                                <KeyRound className="w-6 h-6" />
-                                <CardTitle>Change Password</CardTitle>
-                            </div>
-                            <CardDescription>
-                                Update your account password. If you have forgotten your password, please contact an administrator.
-                            </CardDescription>
-                        </CardHeader>
-                        <CardContent className="space-y-4">
-                            <FormField
-                                control={passwordForm.control}
-                                name="newPassword"
-                                render={({ field }) => (
-                                    <FormItem>
-                                        <FormLabel>New Password</FormLabel>
-                                        <FormControl>
-                                            <Input type="password" {...field} />
-                                        </FormControl>
-                                        <FormMessage />
-                                    </FormItem>
-                                )}
-                            />
-                            <FormField
-                                control={passwordForm.control}
-                                name="confirmPassword"
-                                render={({ field }) => (
-                                    <FormItem>
-                                        <FormLabel>Confirm New Password</FormLabel>
-                                        <FormControl>
-                                            <Input type="password" {...field} />
-                                        </FormControl>
-                                        <FormMessage />
-                                    </FormItem>
-                                )}
-                            />
-                        </CardContent>
-                        <CardFooter className="flex justify-end">
-                            <Button type="submit">Change Password</Button>
-                        </CardFooter>
-                    </Card>
-                </fieldset>
-            </form>
-        </Form>
-
         <Form {...monetizationForm}>
             <form onSubmit={monetizationForm.handleSubmit(onMonetizationSubmit)} className="space-y-8">
                  <fieldset disabled={!isActivated}>
