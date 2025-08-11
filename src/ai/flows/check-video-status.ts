@@ -11,12 +11,14 @@
 
 import {ai} from '@/ai/genkit';
 import {z} from 'genkit';
-import { getOperation, storeGeneratedVideo, getGeneratedVideo, updateVideoStatus, getVideoScript, getVideo } from '@/lib/video-store';
+import { getOperation, getVideo, updateVideoMetadata } from '@/lib/video-store';
 import { generateSpeechAudio } from './generate-speech-audio';
 import { generateThumbnail } from './generate-thumbnail';
+import { getStorage, ref, uploadString, getDownloadURL } from "firebase/storage";
+
 
 const CheckVideoStatusInputSchema = z.object({
-  title: z.string().describe('The title of the video to check.'),
+  videoId: z.string().describe('The Firestore ID of the video to check.'),
 });
 export type CheckVideoStatusInput = z.infer<typeof CheckVideoStatusInputSchema>;
 
@@ -37,20 +39,29 @@ const checkVideoStatusFlow = ai.defineFlow(
     inputSchema: CheckVideoStatusInputSchema,
     outputSchema: CheckVideoStatusOutputSchema,
   },
-  async ({ title }) => {
-    const videoDetails = await getVideo(title);
+  async ({ videoId }) => {
+    const videoDetails = await getVideo(videoId);
     if (!videoDetails) {
         return { status: 'not_found' };
     }
 
-    const generatedVideo = await getGeneratedVideo(title);
-    if (generatedVideo?.videoUrl) {
-        return { status: 'completed', videoUrl: generatedVideo.videoUrl };
+    // If URLs are already stored, it's completed.
+    if (videoDetails.videoUrl && videoDetails.audioUrl) {
+        return { status: 'completed', videoUrl: videoDetails.videoUrl };
     }
     
-    const operationInfo = await getOperation(title);
+    if (!videoDetails.operationName) {
+        console.error(`No operation name found for videoId "${videoId}"`);
+        await updateVideoMetadata(videoId, { status: 'Failed' });
+        return { status: 'failed' };
+    }
+
+    const operationInfo = await getOperation(videoDetails.operationName);
     if (!operationInfo) {
-      return { status: 'not_found' };
+      // Operation might have expired or not been stored correctly
+      console.error(`No operation info found for operation "${videoDetails.operationName}"`);
+      await updateVideoMetadata(videoId, { status: 'Failed' });
+      return { status: 'failed' };
     }
     
     let operation = operationInfo.operation;
@@ -61,41 +72,49 @@ const checkVideoStatusFlow = ai.defineFlow(
     
     if (operation.done) {
         if (operation.error) {
-            console.error(`Failed to generate video for "${title}":`, operation.error.message);
-            await updateVideoStatus(title, 'Failed');
+            console.error(`Failed to generate video for videoId "${videoId}":`, operation.error.message);
+            await updateVideoMetadata(videoId, { status: 'Failed' });
             return { status: 'failed' };
         }
 
-        const video = operation.output?.message?.content.find(p => !!p.media);
-        if (!video || !video.media?.url) {
-            console.error(`Failed to find the generated video in the operation output for "${title}".`);
-            await updateVideoStatus(title, 'Failed');
+        const videoMediaPart = operation.output?.message?.content.find(p => !!p.media);
+        if (!videoMediaPart || !videoMediaPart.media?.url) {
+            console.error(`Failed to find the generated video in the operation output for videoId "${videoId}".`);
+            await updateVideoMetadata(videoId, { status: 'Failed' });
             return { status: 'failed' };
         }
         
-        const script = await getVideoScript(title);
-        if(!script) {
-            console.error(`Failed to find script for generated video "${title}".`);
-            await updateVideoStatus(title, 'Failed');
-            return { status: 'failed' };
-        }
-
         try {
-            const { audioDataUri } = await generateSpeechAudio({ script });
-            await storeGeneratedVideo(title, video.media.url, audioDataUri);
+            const storage = getStorage();
             
+            // 1. Upload video to Firebase Storage
+            const videoRef = ref(storage, `videos/${videoId}/generated_video.mp4`);
+            await uploadString(videoRef, videoMediaPart.media.url, 'data_url');
+            const videoUrl = await getDownloadURL(videoRef);
+
+            // 2. Generate and upload audio
+            const { audioDataUri } = await generateSpeechAudio({ script: videoDetails.script });
+            const audioRef = ref(storage, `videos/${videoId}/generated_audio.wav`);
+            await uploadString(audioRef, audioDataUri, 'data_url');
+            const audioUrl = await getDownloadURL(audioRef);
+
+            // 3. Update Firestore with URLs
             const finalStatus = videoDetails.suggestedUploadTime ? 'Scheduled' : 'Generated';
-            await updateVideoStatus(title, finalStatus);
+            await updateVideoMetadata(videoId, { 
+                videoUrl, 
+                audioUrl,
+                status: finalStatus
+            });
             
-            if (finalStatus === 'Scheduled') {
-                // Kick off thumbnail generation in the background
-                generateThumbnail({ topic: videoDetails.title, script: videoDetails.script, title: videoDetails.optimizedTitle });
+            // 4. Kick off thumbnail generation in the background
+            if (finalStatus === 'Scheduled' || finalStatus === 'Generated') {
+                generateThumbnail({ topic: videoDetails.title, script: videoDetails.script, title: videoDetails.optimizedTitle, videoId });
             }
 
-            return { status: 'completed' };
+            return { status: 'completed', videoUrl };
         } catch(e) {
-            console.error(`Failed to generate audio or store video for "${title}"`, e);
-            await updateVideoStatus(title, 'Failed');
+            console.error(`Failed to process and store assets for videoId "${videoId}"`, e);
+            await updateVideoMetadata(videoId, { status: 'Failed' });
             return { status: 'failed' };
         }
     }
@@ -103,3 +122,4 @@ const checkVideoStatusFlow = ai.defineFlow(
     return { status: 'processing' };
   }
 );
+
