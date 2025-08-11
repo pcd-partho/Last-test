@@ -4,7 +4,7 @@
 import * as React from "react";
 import { usePathname, useRouter } from "next/navigation";
 import Link from "next/link";
-import { LayoutDashboard, LibraryBig, PlusSquare, Settings, BarChart2, BookOpen, LogOut, ShieldCheck, AlertCircle, ChevronsUpDown } from "lucide-react";
+import { LayoutDashboard, LibraryBig, PlusSquare, Settings, BarChart2, BookOpen, LogOut, ShieldCheck, AlertCircle, ChevronsUpDown, Loader2 } from "lucide-react";
 import {
   SidebarProvider,
   Sidebar,
@@ -24,74 +24,46 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { runAutoPilot } from "@/lib/video-store";
 import { useToast } from "@/hooks/use-toast";
+import { useAuth } from "@/hooks/use-auth";
+import { signOut } from "firebase/auth";
+import { auth } from "@/lib/firebase";
 
-const initialAdminEmails = ['deypartho569@gmail.com', 'Pdey02485@gmail.com'];
 
 export default function AppLayout({ children }: { children: React.ReactNode }) {
     const pathname = usePathname();
     const router = useRouter();
     const { toast } = useToast();
+    const { user, appUser, isAdmin, isActivated, isLoading } = useAuth();
+    
     const [channelName, setChannelName] = React.useState("AutoTube AI");
     const [channelLogoUrl, setChannelLogoUrl] = React.useState<string | null>(null);
-    const [isActivated, setIsActivated] = React.useState(false);
-    const [isAdmin, setIsAdmin] = React.useState(false);
-    const [isLoading, setIsLoading] = React.useState(true);
-    const [userEmail, setUserEmail] = React.useState<string | null>(null);
-
+    
     React.useEffect(() => {
-        const email = localStorage.getItem("user_email");
-        setUserEmail(email);
-
         const name = localStorage.getItem("youtube_channel_name");
         const logoUrl = localStorage.getItem("youtube_channel_logo_url");
-        if (name) {
-            setChannelName(name);
-        }
-        if (logoUrl) {
-            setChannelLogoUrl(logoUrl);
-        }
-        
-        const storedAdmins = localStorage.getItem("admin_emails");
-        const adminEmails = storedAdmins ? JSON.parse(storedAdmins) : initialAdminEmails;
+        if (name) setChannelName(name);
+        if (logoUrl) setChannelLogoUrl(logoUrl);
+    }, [user]);
 
-
-        const adminUser = email ? adminEmails.includes(email) : false;
-        setIsAdmin(adminUser);
-
-        if (email && !adminUser) {
-            const keyData = localStorage.getItem(`activation_key_status_${email}`);
-            if (keyData) {
-                try {
-                    const { expires } = JSON.parse(keyData);
-                    if (expires && new Date().getTime() > expires) {
-                        localStorage.removeItem(`user_activated_${email}`);
-                        localStorage.removeItem(`activation_key_status_${email}`);
-                        setIsActivated(false);
-                    } else {
-                        setIsActivated(true);
-                    }
-                } catch(e) {
-                    setIsActivated(false);
-                }
-            } else {
-                const legacyActivated = localStorage.getItem(`user_activated_${email}`) === 'true';
-                setIsActivated(legacyActivated);
-            }
-        } else if (adminUser) {
-            setIsActivated(true);
-        }
-
-
-        setIsLoading(false);
-        
-        if (!email && pathname !== '/login' && pathname !== '/signup') {
+    React.useEffect(() => {
+        if (!isLoading && !user && pathname !== '/login' && pathname !== '/signup') {
             router.replace('/login');
+        } else if (!isLoading && user && !isActivated && pathname !== '/activate') {
+            const allowedPaths = ['/settings', '/guides/youtube-api'];
+            if (isAdmin && allowedPaths.includes(pathname)) {
+                // allow admin to access settings and guides
+            } else if (!isAdmin) {
+                router.replace('/activate');
+            }
         }
+    }, [isLoading, user, isActivated, isAdmin, pathname, router]);
 
+    React.useEffect(() => {
+        if (!user) return;
         // --- Autonomous Inactivity Check ---
         const autonomousEnabled = localStorage.getItem("autonomous_mode_enabled") === "true";
         const channelId = localStorage.getItem("youtube_channel_id");
-        const lastSeen = localStorage.getItem("last_seen_timestamp");
+        const lastSeen = localStorage.getItem(`last_seen_${user.uid}`);
         const now = new Date().getTime();
         
         if (autonomousEnabled && channelId && lastSeen) {
@@ -101,8 +73,8 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
                     console.log("User inactive for over 2 days. Triggering autonomous mode.");
                     toast({ title: "Autonomous Mode Activated", description: "Creating content due to inactivity."});
                     try {
-                        await runAutoPilot('long');
-                        await runAutoPilot('short');
+                        await runAutoPilot(user.uid, 'long');
+                        await runAutoPilot(user.uid, 'short');
                         toast({ title: "Autonomous Run Complete", description: "New content has been generated."});
                     } catch (e) {
                         toast({ title: "Autonomous Run Failed", description: "Could not generate content.", variant: "destructive"});
@@ -111,21 +83,23 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
                 })();
             }
         }
-        localStorage.setItem("last_seen_timestamp", now.toString());
-        // --- End Autonomous Inactivity Check ---
+        localStorage.setItem(`last_seen_${user.uid}`, now.toString());
+         // --- End Autonomous Inactivity Check ---
+    }, [user, toast]);
 
-
-    }, [router, pathname, toast]);
-
-    const handleLogout = () => {
-      localStorage.removeItem("user_email");
-      router.push('/login');
+    const handleLogout = async () => {
+      try {
+        await signOut(auth);
+        // Clear local storage related to the specific channel
+        localStorage.removeItem("youtube_channel_name");
+        localStorage.removeItem("youtube_channel_logo_url");
+        toast({ title: "Logged Out", description: "You have been successfully logged out." });
+        router.push('/login');
+      } catch (error) {
+        toast({ title: "Logout Failed", description: "Could not log you out. Please try again.", variant: "destructive" });
+      }
     };
     
-    const handleSwitchAccount = () => {
-        router.push('/login');
-    }
-
     const menuItems = [
       { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
       { href: "/content", label: "Content", icon: LibraryBig },
@@ -142,13 +116,13 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
     
     if (isLoading) {
         return (
-            <div className="flex min-h-screen items-center justify-center">
-                <p>Loading...</p>
+            <div className="flex min-h-screen items-center justify-center bg-background">
+                <Loader2 className="h-8 w-8 animate-spin text-primary" />
             </div>
         );
     }
     
-    if (!userEmail) {
+    if (!user && (pathname !== '/login' && pathname !== '/signup')) {
         return null; 
     }
 
@@ -156,150 +130,79 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
       return <main className="flex-1 p-4 sm:p-6 lg:p-8 bg-background/90">{children}</main>
     }
     
-    if (pathname === '/activate') {
-        return (
-             <SidebarProvider>
-                <Sidebar>
-                    <SidebarHeader>
-                    <div className="flex items-center gap-2">
-                        <Logo className="w-8 h-8 text-primary" />
-                        <h1 className="text-xl font-semibold font-headline text-sidebar-foreground">
-                        AutoTubeAI
-                        </h1>
-                    </div>
-                    </SidebarHeader>
-                    <SidebarContent>
-                    <SidebarMenu>
-                        {menuItems.map((item) => (
-                        <SidebarMenuItem key={item.href}>
-                            <Link href={item.href}>
-                            <SidebarMenuButton
-                                isActive={pathname.startsWith(item.href) && (item.href !== '/' || pathname === '/')}
-                                tooltip={item.label}
-                            >
-                                <item.icon />
-                                <span>{item.label}</span>
-                            </SidebarMenuButton>
-                            </Link>
-                        </SidebarMenuItem>
-                        ))}
-                    </SidebarMenu>
-                    </SidebarContent>
-                    <SidebarFooter>
-                        <DropdownMenu>
-                            <DropdownMenuTrigger asChild>
-                                <Button variant="ghost" className="w-full justify-start gap-3 p-2 h-auto">
-                                    <Avatar className="h-9 w-9">
-                                    {channelLogoUrl && <AvatarImage src={channelLogoUrl} alt={channelName} />}
-                                    <AvatarFallback>{channelName.charAt(0)}</AvatarFallback>
-                                    </Avatar>
-                                    <div className="overflow-hidden flex-1 text-left">
-                                        <p className="font-medium truncate text-sidebar-foreground">{channelName}</p>
-                                        <p className="text-xs text-sidebar-foreground/70 truncate">{userEmail}</p>
-                                    </div>
-                                    <ChevronsUpDown className="h-4 w-4 text-sidebar-foreground/70" />
-                                </Button>
-                            </DropdownMenuTrigger>
-                            <DropdownMenuContent className="w-64 mb-2 ml-2" side="top" align="start">
-                                <DropdownMenuLabel>My Account</DropdownMenuLabel>
-                                <DropdownMenuSeparator />
-                                <DropdownMenuItem onClick={handleSwitchAccount}>
-                                    Switch Account
-                                </DropdownMenuItem>
-                                <DropdownMenuItem onClick={handleLogout}>
-                                    <LogOut className="mr-2 h-4 w-4" />
-                                    <span>Log Out</span>
-                                </DropdownMenuItem>
-                            </DropdownMenuContent>
-                        </DropdownMenu>
-                    </SidebarFooter>
-                </Sidebar>
-                <SidebarInset>
-                    <header className="flex items-center justify-between p-4 border-b">
-                        <SidebarTrigger />
-                    </header>
-                    <main className="flex-1 p-4 sm:p-6 lg:p-8 bg-background/90">
-                        {children}
-                    </main>
-                </SidebarInset>
-            </SidebarProvider>
-        )
-    }
-    
-    return (
+    const coreLayout = (
         <SidebarProvider>
-          <Sidebar>
-            <SidebarHeader>
-              <div className="flex items-center gap-2">
-                <Logo className="w-8 h-8 text-primary" />
-                <h1 className="text-xl font-semibold font-headline text-sidebar-foreground">
-                  AutoTubeAI
-                </h1>
-              </div>
-            </SidebarHeader>
-            <SidebarContent>
-              <SidebarMenu>
-                {menuItems.map((item) => (
-                  <SidebarMenuItem key={item.href}>
-                    <Link href={item.href}>
-                      <SidebarMenuButton
-                        isActive={pathname.startsWith(item.href) && (item.href !== '/' || pathname === '/')}
-                        tooltip={item.label}
-                      >
-                        <item.icon />
-                        <span>{item.label}</span>
-                      </SidebarMenuButton>
-                    </Link>
-                  </SidebarMenuItem>
-                ))}
-              </SidebarMenu>
-            </SidebarContent>
-            <SidebarFooter>
-                <DropdownMenu>
-                    <DropdownMenuTrigger asChild>
-                        <Button variant="ghost" className="w-full justify-start gap-3 p-2 h-auto">
-                            <Avatar className="h-9 w-9">
-                              {channelLogoUrl && <AvatarImage src={channelLogoUrl} alt={channelName} />}
-                              <AvatarFallback>{channelName.charAt(0)}</AvatarFallback>
-                            </Avatar>
-                            <div className="overflow-hidden flex-1 text-left">
-                                <p className="font-medium truncate text-sidebar-foreground">{channelName}</p>
-                                <p className="text-xs text-sidebar-foreground/70 truncate">{userEmail}</p>
-                            </div>
-                            <ChevronsUpDown className="h-4 w-4 text-sidebar-foreground/70" />
-                        </Button>
-                    </DropdownMenuTrigger>
-                    <DropdownMenuContent className="w-64 mb-2 ml-2" side="top" align="start">
-                        <DropdownMenuLabel>My Account</DropdownMenuLabel>
-                        <DropdownMenuSeparator />
-                        <DropdownMenuItem onClick={handleSwitchAccount}>
-                            Switch Account
-                        </DropdownMenuItem>
-                        <DropdownMenuItem onClick={handleLogout}>
-                            <LogOut className="mr-2 h-4 w-4" />
-                            <span>Log Out</span>
-                        </DropdownMenuItem>
-                    </DropdownMenuContent>
-                </DropdownMenu>
-            </SidebarFooter>
-          </Sidebar>
-          <SidebarInset>
-            <header className="flex items-center justify-between p-4 border-b">
-                <SidebarTrigger />
-            </header>
-            <main className="flex-1 p-4 sm:p-6 lg:p-8 bg-background/90">
-                {!isAdmin && !isActivated && pathname !== '/activate' && (
-                    <Alert variant="destructive" className="mb-4">
-                        <AlertCircle className="h-4 w-4" />
-                        <AlertTitle>Account Not Activated</AlertTitle>
-                        <AlertDescription>
-                            Your account is not activated. You can explore the application, but all creation and editing features are disabled. Please go to the <Link href="/activate" className="font-semibold underline">Activation Page</Link> to enable full functionality.
-                        </AlertDescription>
-                    </Alert>
-                )}
-                {children}
-            </main>
-          </SidebarInset>
+            <Sidebar>
+                <SidebarHeader>
+                <div className="flex items-center gap-2">
+                    <Logo className="w-8 h-8 text-primary" />
+                    <h1 className="text-xl font-semibold font-headline text-sidebar-foreground">
+                    AutoTubeAI
+                    </h1>
+                </div>
+                </SidebarHeader>
+                <SidebarContent>
+                <SidebarMenu>
+                    {menuItems.map((item) => (
+                    <SidebarMenuItem key={item.href}>
+                        <Link href={item.href}>
+                        <SidebarMenuButton
+                            isActive={pathname.startsWith(item.href) && (item.href !== '/' || pathname === '/')}
+                            tooltip={item.label}
+                        >
+                            <item.icon />
+                            <span>{item.label}</span>
+                        </SidebarMenuButton>
+                        </Link>
+                    </SidebarMenuItem>
+                    ))}
+                </SidebarMenu>
+                </SidebarContent>
+                <SidebarFooter>
+                    <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                            <Button variant="ghost" className="w-full justify-start gap-3 p-2 h-auto">
+                                <Avatar className="h-9 w-9">
+                                {channelLogoUrl && <AvatarImage src={channelLogoUrl} alt={channelName} />}
+                                <AvatarFallback>{appUser?.name?.charAt(0) || 'A'}</AvatarFallback>
+                                </Avatar>
+                                <div className="overflow-hidden flex-1 text-left">
+                                    <p className="font-medium truncate text-sidebar-foreground">{appUser?.name || channelName}</p>
+                                    <p className="text-xs text-sidebar-foreground/70 truncate">{appUser?.email}</p>
+                                </div>
+                                <ChevronsUpDown className="h-4 w-4 text-sidebar-foreground/70" />
+                            </Button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent className="w-64 mb-2 ml-2" side="top" align="start">
+                            <DropdownMenuLabel>My Account</DropdownMenuLabel>
+                            <DropdownMenuSeparator />
+                            <DropdownMenuItem onClick={handleLogout}>
+                                <LogOut className="mr-2 h-4 w-4" />
+                                <span>Log Out</span>
+                            </DropdownMenuItem>
+                        </DropdownMenuContent>
+                    </DropdownMenu>
+                </SidebarFooter>
+            </Sidebar>
+            <SidebarInset>
+                <header className="flex items-center justify-between p-4 border-b">
+                    <SidebarTrigger />
+                </header>
+                <main className="flex-1 p-4 sm:p-6 lg:p-8 bg-background/90">
+                    {!isActivated && pathname !== '/activate' && (
+                        <Alert variant="destructive" className="mb-4">
+                            <AlertCircle className="h-4 w-4" />
+                            <AlertTitle>Account Not Activated</AlertTitle>
+                            <AlertDescription>
+                                Your account is not activated. You can explore the application, but all creation and editing features are disabled. Please go to the <Link href="/activate" className="font-semibold underline">Activation Page</Link> to enable full functionality.
+                            </AlertDescription>
+                        </Alert>
+                    )}
+                    {children}
+                </main>
+            </SidebarInset>
         </SidebarProvider>
     );
+    
+    return coreLayout;
 }
