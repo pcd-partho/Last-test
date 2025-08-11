@@ -20,7 +20,10 @@ import { Input } from "@/components/ui/input"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { useToast } from "@/hooks/use-toast"
 import Logo from "@/components/logo"
-import { Eye, EyeOff } from "lucide-react"
+import { Eye, EyeOff, Loader2 } from "lucide-react"
+import { auth, db } from "@/lib/firebase"
+import { createUserWithEmailAndPassword, updateProfile } from "firebase/auth"
+import { doc, setDoc } from "firebase/firestore"
 
 const signupSchema = z.object({
   name: z.string().min(2, {
@@ -34,12 +37,13 @@ const signupSchema = z.object({
   }),
 })
 
-const adminEmails = ['deypartho569@gmail.com', 'Pdey02485@gmail.com'];
+const initialAdminEmails = ['deypartho569@gmail.com', 'Pdey02485@gmail.com'];
 
 export default function SignupClient() {
   const { toast } = useToast()
   const router = useRouter();
   const [showPassword, setShowPassword] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   const form = useForm<z.infer<typeof signupSchema>>({
     resolver: zodResolver(signupSchema),
@@ -50,31 +54,40 @@ export default function SignupClient() {
     },
   })
 
-  // In a real app, this would make an API call to your auth provider
-  function onSubmit(data: z.infer<typeof signupSchema>) {
-    // IMPORTANT: This is an insecure way to store passwords and is for prototype purposes only.
-    // In a real application, never store plain text passwords.
-    localStorage.setItem(`user_auth_${data.email}`, JSON.stringify({ password: data.password, name: data.name }));
-
-    // Store email for use across the app
-    localStorage.setItem("user_email", data.email);
-
-    // Check if the new user is an admin
-    if (adminEmails.includes(data.email)) {
-        localStorage.setItem(`user_activated_${data.email}`, "true"); // Admins are auto-activated
-        toast({
-            title: "Admin Account Created!",
-            description: "Please log in to access the admin dashboard.",
+  async function onSubmit(data: z.infer<typeof signupSchema>) {
+    setIsSubmitting(true);
+    try {
+        const userCredential = await createUserWithEmailAndPassword(auth, data.email, data.password);
+        await updateProfile(userCredential.user, { displayName: data.name });
+        
+        // Create user document in Firestore
+        const userDocRef = doc(db, 'users', userCredential.user.uid);
+        const isAdmin = initialAdminEmails.includes(data.email.toLowerCase());
+        await setDoc(userDocRef, {
+            uid: userCredential.user.uid,
+            email: data.email.toLowerCase(),
+            name: data.name,
+            isAdmin: isAdmin,
+            isActivated: isAdmin, // Admins are activated by default
+            activationExpires: null,
         });
-    } else {
-        localStorage.removeItem(`user_activated_${data.email}`); // Ensure regular users are not activated
+
         toast({
             title: "Account Created!",
-            description: "You can now log in. Some features will be disabled until you activate your account.",
+            description: "You can now log in.",
         });
+        
+        router.push('/login');
+    } catch(error: any) {
+        console.error("Firebase Signup Error: ", error);
+        let description = "An unexpected error occurred. Please try again.";
+        if (error.code === 'auth/email-already-in-use') {
+            description = "This email is already in use. Please log in or use a different email.";
+        }
+        toast({ title: "Signup Failed", description, variant: "destructive" });
+    } finally {
+        setIsSubmitting(false);
     }
-    
-    router.push('/login');
   }
 
   return (
@@ -98,7 +111,7 @@ export default function SignupClient() {
                         <FormItem>
                         <FormLabel>Name</FormLabel>
                         <FormControl>
-                            <Input placeholder="Your Name" {...field} />
+                            <Input placeholder="Your Name" {...field} disabled={isSubmitting} />
                         </FormControl>
                         <FormMessage />
                         </FormItem>
@@ -111,7 +124,7 @@ export default function SignupClient() {
                         <FormItem>
                         <FormLabel>Email</FormLabel>
                         <FormControl>
-                            <Input type="email" placeholder="name@example.com" {...field} />
+                            <Input type="email" placeholder="name@example.com" {...field} disabled={isSubmitting} />
                         </FormControl>
                         <FormMessage />
                         </FormItem>
@@ -125,13 +138,14 @@ export default function SignupClient() {
                         <FormLabel>Password</FormLabel>
                         <FormControl>
                              <div className="relative">
-                                <Input type={showPassword ? "text" : "password"} placeholder="••••••••" {...field} />
+                                <Input type={showPassword ? "text" : "password"} placeholder="••••••••" {...field} disabled={isSubmitting} />
                                 <Button
                                     type="button"
                                     variant="ghost"
                                     size="icon"
                                     className="absolute inset-y-0 right-0 h-full px-3 text-muted-foreground hover:text-foreground"
                                     onClick={() => setShowPassword(prev => !prev)}
+                                    disabled={isSubmitting}
                                 >
                                     {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
                                     <span className="sr-only">{showPassword ? "Hide password" : "Show password"}</span>
@@ -142,7 +156,10 @@ export default function SignupClient() {
                         </FormItem>
                     )}
                     />
-                    <Button type="submit" className="w-full">Create Account</Button>
+                    <Button type="submit" className="w-full" disabled={isSubmitting}>
+                        {isSubmitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                        Create Account
+                    </Button>
                 </form>
             </Form>
             <div className="mt-4 text-center text-sm">
