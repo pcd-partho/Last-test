@@ -10,36 +10,33 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle, CardFooter }
 import { Input } from "@/components/ui/input";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { useToast } from "@/hooks/use-toast";
-import Logo from "@/components/logo";
 import { KeyRound, Send, Users } from "lucide-react";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { useEffect, useState } from "react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { useAuth } from "@/hooks/use-auth";
+import { db } from "@/lib/firebase";
+import { collection, getDocs, query, where, doc, updateDoc } from "firebase/firestore";
 
 const activationSchema = z.object({
   activationKey: z.string().min(1, { message: "Activation key is required." }),
 });
 
-const initialAdminEmails = ['deypartho569@gmail.com', 'Pdey02485@gmail.com'];
-
 export default function ActivateClient() {
   const { toast } = useToast();
   const router = useRouter();
+  const { user, appUser } = useAuth();
   const [adminNames, setAdminNames] = useState<string[]>([]);
   
   useEffect(() => {
-    // In a real app, this would be fetched from a secure backend.
-    const storedAdminEmailsJSON = localStorage.getItem("admin_emails");
-    const storedAdminEmails = storedAdminEmailsJSON ? JSON.parse(storedAdminEmailsJSON) : [];
-    const allAdminEmails = [...new Set([...initialAdminEmails, ...storedAdminEmails])];
-    
-    if (allAdminEmails) {
-      const names = allAdminEmails.map((email: string) => {
-        const authData = localStorage.getItem(`user_auth_${email}`);
-        return authData ? JSON.parse(authData).name : email.split('@')[0];
-      }).filter(Boolean);
-      setAdminNames(names);
-    }
+    const fetchAdmins = async () => {
+        const usersRef = collection(db, "users");
+        const q = query(usersRef, where("isAdmin", "==", true));
+        const querySnapshot = await getDocs(q);
+        const names = querySnapshot.docs.map(doc => doc.data().name);
+        setAdminNames(names);
+    };
+    fetchAdmins();
   }, []);
 
   const form = useForm<z.infer<typeof activationSchema>>({
@@ -49,15 +46,14 @@ export default function ActivateClient() {
     },
   });
 
-  const handleActivation = (data: z.infer<typeof activationSchema>) => {
-    const userEmail = localStorage.getItem("user_email");
-    if (!userEmail) {
-        toast({ title: "Activation Error", description: "Could not find your email. Please log in again.", variant: "destructive" });
+  const handleActivation = async (data: z.infer<typeof activationSchema>) => {
+    if (!user || !user.email) {
+        toast({ title: "Activation Error", description: "Could not find your user information. Please log in again.", variant: "destructive" });
         router.push("/login");
         return;
     }
     
-    const storedKeyData = localStorage.getItem(`activation_key_${userEmail}`);
+    const storedKeyData = localStorage.getItem(`activation_key_${user.email.toLowerCase()}`);
     if (!storedKeyData) {
         toast({ title: "Invalid Activation Key", description: "The key provided is not valid for your account.", variant: "destructive" });
         return;
@@ -70,33 +66,47 @@ export default function ActivateClient() {
             return;
         }
         if (expires && new Date().getTime() > expires) {
-            toast({ title: "Activation Key Expired", description: "This key has expired. Please request a new one from the owner.", variant: "destructive" });
-            localStorage.removeItem(`activation_key_${userEmail}`); // Clean up expired key
+            toast({ title: "Activation Key Expired", description: "This key has expired. Please request a new one from an admin.", variant: "destructive" });
+            localStorage.removeItem(`activation_key_${user.email.toLowerCase()}`);
             return;
         }
 
-        // Success!
+        // Update user in Firestore
+        const userDocRef = doc(db, 'users', user.uid);
+        await updateDoc(userDocRef, {
+            isActivated: true,
+            activationExpires: expires,
+        });
+
         toast({ title: "Account Activated!", description: "Welcome! Redirecting you to the dashboard..." });
-        localStorage.setItem(`user_activated_${userEmail}`, "true");
-        // Store key status with expiration to be checked on layout load
-        localStorage.setItem(`activation_key_status_${userEmail}`, JSON.stringify({ expires })); 
-        localStorage.removeItem(`activation_key_${userEmail}`); // Key has been used
+        localStorage.removeItem(`activation_key_${user.email.toLowerCase()}`); // Key has been used
         
-        // Use a reload to ensure the layout state is fully refreshed
         window.location.href = '/dashboard';
 
     } catch(e) {
+        console.error("Activation Error: ", e);
         toast({ title: "Activation Failed", description: "An unexpected error occurred while validating your key.", variant: "destructive" });
     }
   };
 
   const handleRequestKey = () => {
-    const userEmail = localStorage.getItem("user_email") || "your email";
+    const userEmail = user?.email || "your email";
     console.log(`Simulating activation key request for ${userEmail}`);
     toast({
         title: "Request Sent!",
-        description: `Your request for an activation key has been sent to the admin.`,
+        description: `Your request for an activation key has been sent to the administrators.`,
     });
+  }
+  
+  if (appUser?.isActivated) {
+    return (
+        <div className="flex flex-col items-center justify-center text-center">
+             <h1 className="text-3xl font-bold font-headline">Account Already Active</h1>
+                <p className="text-muted-foreground mt-2">
+                    Your account is already activated. Redirecting you to the dashboard...
+                </p>
+        </div>
+    )
   }
 
   return (
