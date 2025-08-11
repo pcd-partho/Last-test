@@ -8,6 +8,8 @@ import { DollarSign, Users, Video, View, CheckCircle, Bot, ShieldOff } from "luc
 import { useEffect, useState } from "react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { formatDistanceToNow } from 'date-fns';
+import { useAuth } from "@/hooks/use-auth";
+import Link from "next/link";
 
 
 const chartData = [
@@ -48,39 +50,23 @@ const chartConfig = {
 };
 
 export default function DashboardClient() {
-  const [isActivated, setIsActivated] = useState(false);
-  const [isAdmin, setIsAdmin] = useState(false);
+  const { appUser, isActivated, isAdmin } = useAuth();
   const [activationTimeLeft, setActivationTimeLeft] = useState<string | null>(null);
   const [isAutonomousMode, setIsAutonomousMode] = useState(false);
 
   useEffect(() => {
-      const email = localStorage.getItem("user_email");
-      if (!email) return;
-      
-      const storedAdmins = JSON.parse(localStorage.getItem("admin_emails") || "[]");
-      const adminUser = storedAdmins.includes(email);
-      
-      setIsAdmin(adminUser);
-
-      const activated = localStorage.getItem(`user_activated_${email}`) === "true";
-      setIsActivated(activated || adminUser);
-
-      if (activated && !adminUser) {
-          const keyData = localStorage.getItem(`activation_key_status_${email}`);
-          if (keyData) {
-              const { expires } = JSON.parse(keyData);
-              if (expires && new Date().getTime() < expires) {
-                  setActivationTimeLeft(formatDistanceToNow(new Date(expires), { addSuffix: true }));
-              } else if (!expires) {
-                  setActivationTimeLeft("Never expires");
-              }
+      if (appUser && appUser.isActivated && !appUser.isAdmin) {
+          if (appUser.activationExpires) {
+            setActivationTimeLeft(formatDistanceToNow(new Date(appUser.activationExpires), { addSuffix: true }));
+          } else {
+            setActivationTimeLeft("Never expires");
           }
       }
       
       const autonomousEnabled = localStorage.getItem("autonomous_mode_enabled") === "true";
       setIsAutonomousMode(autonomousEnabled);
 
-  }, []);
+  }, [appUser]);
 
   return (
     <div className="flex flex-col gap-8">
@@ -103,7 +89,7 @@ export default function DashboardClient() {
               <Bot className="h-4 w-4" />
               <AlertTitle>Autonomous Mode is On</AlertTitle>
               <AlertDescription>
-                  The AI is configured to automatically generate and schedule content if you are inactive for more than two days. You can manage this in <a href="/settings" className="font-semibold underline">Settings</a>.
+                  The AI is configured to automatically generate content if you are inactive. You can manage this in <Link href="/settings" className="font-semibold underline">Settings</Link>.
               </AlertDescription>
           </Alert>
       ) : (
@@ -111,7 +97,7 @@ export default function DashboardClient() {
               <ShieldOff className="h-4 w-4 text-muted-foreground" />
               <AlertTitle>Autonomous Mode is Off</AlertTitle>
               <AlertDescription>
-                 The AI will not automatically generate content for you. You can enable this feature in <a href="/settings" className="font-semibold underline">Settings</a>.
+                 The AI will not automatically generate content for you. You can enable this feature in <Link href="/settings" className="font-semibold underline">Settings</Link>.
               </AlertDescription>
           </Alert>
       )}
