@@ -10,13 +10,13 @@ import { useToast } from "@/hooks/use-toast";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Textarea } from "@/components/ui/textarea";
 import { Form, FormControl, FormDescription, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Wand2, Loader2, Feather } from "lucide-react";
 import { getThisWeeksVideoCounts, getTodaysVideoCounts, runAutoPilot, createAndProcessVideo } from "@/lib/video-store";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
+import { useAuth } from "@/hooks/use-auth";
 
 const aiCreationSchema = z.object({
   topic: z.string().optional(),
@@ -35,6 +35,7 @@ const ownScriptSchema = z.object({
 export default function CreateClient() {
   const router = useRouter();
   const { toast } = useToast();
+  const { user, isActivated } = useAuth();
   const [isCreatingLongs, setIsCreatingLongs] = useState(false);
   const [isCreatingShorts, setIsCreatingShorts] = useState(false);
   const [isManualCreating, setIsManualCreating] = useState(false);
@@ -65,21 +66,25 @@ export default function CreateClient() {
 
 
   const updateRemainingCounts = async () => {
-    const { longs } = await getThisWeeksVideoCounts();
-    const { shorts } = await getTodaysVideoCounts();
+    if (!user) return;
+    const { longs } = await getThisWeeksVideoCounts(user.uid);
+    const { shorts } = await getTodaysVideoCounts(user.uid);
     setThisWeeksLongs(longs);
     setTodaysShorts(shorts);
   };
 
   useEffect(() => {
-    updateRemainingCounts();
-  }, []);
+    if (user) {
+        updateRemainingCounts();
+    }
+  }, [user]);
 
   const handleAiSubmit = async (data: z.infer<typeof aiCreationSchema>) => {
+    if (!user) return;
     setIsManualCreating(true);
     try {
-        const newTitle = await createAndProcessVideo(data.length, undefined, data.topic, data.title, data.inspirationUrl);
-        toast({ title: "Specific Video Created!", description: `Your video "${newTitle}" is now being processed.`});
+        const { optimizedTitle } = await createAndProcessVideo(user.uid, data.length, undefined, data.topic, data.title, data.inspirationUrl);
+        toast({ title: "Specific Video Created!", description: `Your video "${optimizedTitle}" is now being processed.`});
         updateRemainingCounts();
         aiForm.reset();
         router.push('/content');
@@ -92,10 +97,11 @@ export default function CreateClient() {
   }
 
   const handleOwnScriptSubmit = async (data: z.infer<typeof ownScriptSchema>) => {
+    if (!user) return;
     setIsManualCreating(true);
     try {
-        const newTitle = await createAndProcessVideo(data.length, undefined, "Custom Script", data.title, undefined, data.script);
-        toast({ title: "Video from Script Created!", description: `Your video "${newTitle}" is now being processed.` });
+        const { optimizedTitle } = await createAndProcessVideo(user.uid, data.length, undefined, "Custom Script", data.title, undefined, data.script);
+        toast({ title: "Video from Script Created!", description: `Your video "${optimizedTitle}" is now being processed.` });
         updateRemainingCounts();
         ownScriptForm.reset();
         router.push('/content');
@@ -108,11 +114,12 @@ export default function CreateClient() {
   };
   
   const handleAutoCreateLongs = async () => {
+    if (!user) return;
     setIsCreatingLongs(true);
     toast({ title: "Auto-Pilot Engaged", description: "Your AI is now generating the week's long-form videos." });
 
     try {
-        await runAutoPilot('long');
+        await runAutoPilot(user.uid, 'long');
         toast({ title: "Long-Form Generation Complete!", description: "All long-form videos are being processed. Redirecting..." });
         setTimeout(() => router.push('/content'), 3000);
     } catch (error) {
@@ -125,11 +132,12 @@ export default function CreateClient() {
   };
 
   const handleAutoCreateShorts = async () => {
+    if (!user) return;
     setIsCreatingShorts(true);
     toast({ title: "Auto-Pilot Engaged", description: "Your AI is now generating the day's short videos." });
 
     try {
-        await runAutoPilot('short');
+        await runAutoPilot(user.uid, 'short');
         toast({ title: "Shorts Generation Complete!", description: "All short videos are being processed. Redirecting..." });
         setTimeout(() => router.push('/content'), 3000);
     } catch (error) {
@@ -159,50 +167,52 @@ export default function CreateClient() {
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-6">
-            <div className="grid grid-cols-2 gap-4">
-                <div className="text-center space-y-2">
-                    <p className="text-sm font-medium text-muted-foreground">Daily Shorts</p>
-                    <div className="rounded-md border bg-muted/50 p-2">
-                        <p className="text-2xl font-bold">{todaysShorts} / {dailyShortGoal}</p>
-                        <p className="text-xs text-muted-foreground">created today</p>
+            <fieldset disabled={!isActivated}>
+                <div className="grid grid-cols-2 gap-4">
+                    <div className="text-center space-y-2">
+                        <p className="text-sm font-medium text-muted-foreground">Daily Shorts</p>
+                        <div className="rounded-md border bg-muted/50 p-2">
+                            <p className="text-2xl font-bold">{todaysShorts} / {dailyShortGoal}</p>
+                            <p className="text-xs text-muted-foreground">created today</p>
+                        </div>
+                    </div>
+                    <div className="text-center space-y-2">
+                        <p className="text-sm font-medium text-muted-foreground">Weekly Long-Form Videos</p>
+                        <div className="rounded-md border bg-muted/50 p-2">
+                            <p className="text-2xl font-bold">{thisWeeksLongs} / {weeklyLongGoal}</p>
+                            <p className="text-xs text-muted-foreground">created this week</p>
+                        </div>
                     </div>
                 </div>
-                <div className="text-center space-y-2">
-                    <p className="text-sm font-medium text-muted-foreground">Weekly Long-Form Videos</p>
-                    <div className="rounded-md border bg-muted/50 p-2">
-                        <p className="text-2xl font-bold">{thisWeeksLongs} / {weeklyLongGoal}</p>
-                        <p className="text-xs text-muted-foreground">created this week</p>
-                    </div>
+                <div className="flex flex-col gap-4 mt-6">
+                <Button onClick={handleAutoCreateShorts} disabled={isCreatingShorts || todaysShorts >= dailyShortGoal || !isActivated} size="lg" className="h-12 w-full text-base">
+                    {isCreatingShorts ? (
+                        <>
+                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                        Generating Shorts...
+                        </>
+                    ) : (
+                        <>
+                        <Wand2 className="mr-2 h-4 w-4" />
+                        Generate Daily Shorts
+                        </>
+                    )}
+                </Button>
+                <Button onClick={handleAutoCreateLongs} disabled={isCreatingLongs || thisWeeksLongs >= weeklyLongGoal || !isActivated} size="lg" className="h-12 w-full text-base">
+                    {isCreatingLongs ? (
+                        <>
+                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                        Generating Long-Form...
+                        </>
+                    ) : (
+                        <>
+                        <Wand2 className="mr-2 h-4 w-4" />
+                        Generate Weekly Long-Form
+                        </>
+                    )}
+                </Button>
                 </div>
-            </div>
-            <div className="flex flex-col gap-4">
-              <Button onClick={handleAutoCreateShorts} disabled={isCreatingShorts || todaysShorts >= dailyShortGoal} size="lg" className="h-12 w-full text-base">
-                  {isCreatingShorts ? (
-                      <>
-                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                      Generating Shorts...
-                      </>
-                  ) : (
-                      <>
-                      <Wand2 className="mr-2 h-4 w-4" />
-                      Generate Daily Shorts
-                      </>
-                  )}
-              </Button>
-              <Button onClick={handleAutoCreateLongs} disabled={isCreatingLongs || thisWeeksLongs >= weeklyLongGoal} size="lg" className="h-12 w-full text-base">
-                  {isCreatingLongs ? (
-                      <>
-                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                      Generating Long-Form...
-                      </>
-                  ) : (
-                      <>
-                      <Wand2 className="mr-2 h-4 w-4" />
-                      Generate Weekly Long-Form
-                      </>
-                  )}
-              </Button>
-            </div>
+            </fieldset>
           </CardContent>
         </Card>
 
@@ -222,7 +232,7 @@ export default function CreateClient() {
                     <TabsContent value="ai-script" className="pt-4">
                          <Form {...aiForm}>
                             <form onSubmit={aiForm.handleSubmit(handleAiSubmit)} className="space-y-6">
-                                <fieldset>
+                                <fieldset disabled={!isActivated}>
                                     <FormField
                                         control={aiForm.control}
                                         name="length"
@@ -302,7 +312,7 @@ export default function CreateClient() {
                                         )}
                                     />
 
-                                    <Button type="submit" disabled={isManualCreating} className="w-full mt-6">
+                                    <Button type="submit" disabled={isManualCreating || !isActivated} className="w-full mt-6">
                                         {isManualCreating ? (
                                             <>
                                                 <Loader2 className="mr-2 h-4 w-4 animate-spin" />
@@ -319,7 +329,7 @@ export default function CreateClient() {
                     <TabsContent value="own-script" className="pt-4">
                         <Form {...ownScriptForm}>
                             <form onSubmit={ownScriptForm.handleSubmit(handleOwnScriptSubmit)} className="space-y-6">
-                                 <fieldset>
+                                 <fieldset disabled={!isActivated}>
                                     <FormField
                                         control={ownScriptForm.control}
                                         name="title"
@@ -376,7 +386,7 @@ export default function CreateClient() {
                                             </FormItem>
                                         )}
                                     />
-                                    <Button type="submit" disabled={isManualCreating} className="w-full mt-6">
+                                    <Button type="submit" disabled={isManualCreating || !isActivated} className="w-full mt-6">
                                         {isManualCreating ? (
                                             <>
                                                 <Loader2 className="mr-2 h-4 w-4 animate-spin" />
