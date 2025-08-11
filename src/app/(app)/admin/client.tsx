@@ -16,6 +16,9 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Separator } from "@/components/ui/separator";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { useAuth, AppUser } from "@/hooks/use-auth";
+import { db } from "@/lib/firebase";
+import { collection, query, where, getDocs, doc, updateDoc } from "firebase/firestore";
 
 const generateKeySchema = z.object({
   email: z.string().email({
@@ -37,46 +40,25 @@ const adminManagementSchema = z.object({
     email: z.string().email({ message: "Please enter a valid email to add as an admin." }),
 });
 
-type Admin = {
-    email: string;
-    name: string;
-    isOwner: boolean;
-};
-
 const initialAdminEmails = ['deypartho569@gmail.com', 'Pdey02485@gmail.com'];
 
 export default function AdminClient() {
   const { toast } = useToast();
+  const { appUser: currentAppUser } = useAuth();
   const [generatedKey, setGeneratedKey] = useState<string | null>(null);
   const [generatedForEmail, setGeneratedForEmail] = useState<string | null>(null);
-  const [admins, setAdmins] = useState<Admin[]>([]);
-  const [isMainAdmin, setIsMainAdmin] = useState(false);
+  const [admins, setAdmins] = useState<AppUser[]>([]);
   
+  const fetchAdmins = async () => {
+    const usersRef = collection(db, "users");
+    const q = query(usersRef, where("isAdmin", "==", true));
+    const querySnapshot = await getDocs(q);
+    const adminList = querySnapshot.docs.map(doc => doc.data() as AppUser);
+    setAdmins(adminList);
+  };
+
   useEffect(() => {
-    // In a real app, this would be fetched from a secure backend.
-    const currentUserEmail = localStorage.getItem("user_email");
-    if(currentUserEmail && initialAdminEmails.includes(currentUserEmail)) {
-        setIsMainAdmin(true);
-    }
-    
-    const storedAdminEmails = JSON.parse(localStorage.getItem("admin_emails") || "[]");
-    const allAdminEmails = [...new Set([...initialAdminEmails, ...storedAdminEmails])];
-    
-    const adminDetails: Admin[] = allAdminEmails.map((email: string) => {
-        const authData = localStorage.getItem(`user_auth_${email}`);
-        const name = authData ? JSON.parse(authData).name : email.split('@')[0];
-        return {
-            email,
-            name,
-            isOwner: initialAdminEmails.includes(email),
-        }
-    });
-
-    setAdmins(adminDetails);
-
-    if (!localStorage.getItem("admin_emails")) {
-        localStorage.setItem("admin_emails", JSON.stringify(initialAdminEmails));
-    }
+    fetchAdmins();
   }, []);
 
   const activationKeyForm = useForm<z.infer<typeof generateKeySchema>>({
@@ -91,7 +73,7 @@ export default function AdminClient() {
 
   const watchExpiresIn = activationKeyForm.watch("expiresIn");
 
-  const handleGenerateActivationKey = (data: z.infer<typeof generateKeySchema>) => {
+  const handleGenerateActivationKey = async (data: z.infer<typeof generateKeySchema>) => {
     const newKey = `key_${Math.random().toString(36).substring(2, 15)}`;
     let days: number | null;
 
@@ -101,60 +83,73 @@ export default function AdminClient() {
         days = parseInt(data.expiresIn, 10);
     }
     
-    const expirationTime = (days !== null && days > 0) ? new Date().getTime() + days * 24 * 60 * 60 * 1000 : null; // null for 'Never' or 0 days
+    const expirationTime = (days !== null && days > 0) ? new Date().getTime() + days * 24 * 60 * 60 * 1000 : null;
 
     try {
-      localStorage.setItem(`activation_key_${data.email}`, JSON.stringify({ key: newKey, expires: expirationTime }));
+      // For this prototype, we'll still use localStorage for the key itself for simplicity of transfer,
+      // but in a real app, you'd email this key or show it once to the admin.
+      localStorage.setItem(`activation_key_${data.email.toLowerCase()}`, JSON.stringify({ key: newKey, expires: expirationTime }));
       setGeneratedKey(newKey);
       setGeneratedForEmail(data.email);
       toast({
         title: "Key Generated",
-        description: `A new activation key has been generated for ${data.email}.`,
+        description: `Share this key with ${data.email}.`,
       });
       activationKeyForm.reset();
     } catch (error) {
       toast({
         title: "Generation Failed",
-        description: "Could not save the activation key.",
+        description: "Could not generate the activation key.",
         variant: "destructive",
       });
     }
   };
 
-  const handleAddAdmin = (data: z.infer<typeof adminManagementSchema>) => {
+  const handleAddAdmin = async (data: z.infer<typeof adminManagementSchema>) => {
     const newAdminEmail = data.email.toLowerCase();
     if (admins.some(admin => admin.email === newAdminEmail)) {
       toast({ title: "Admin Exists", description: "This user is already an administrator.", variant: "destructive" });
       return;
     }
     
-    const authData = localStorage.getItem(`user_auth_${newAdminEmail}`);
-    if (!authData) {
+    const usersRef = collection(db, "users");
+    const q = query(usersRef, where("email", "==", newAdminEmail));
+    const querySnapshot = await getDocs(q);
+
+    if (querySnapshot.empty) {
         toast({ title: "User Not Found", description: "This user has not signed up yet. Please ask them to create an account first.", variant: "destructive" });
         return;
     }
 
-    const updatedAdminEmails = [...admins.map(a => a.email), newAdminEmail];
-    localStorage.setItem("admin_emails", JSON.stringify(updatedAdminEmails));
-
-    const name = JSON.parse(authData).name || newAdminEmail.split('@')[0];
-    const newAdmin = { email: newAdminEmail, name, isOwner: false };
-    setAdmins(prev => [...prev, newAdmin]);
+    const userDoc = querySnapshot.docs[0];
+    await updateDoc(userDoc.ref, { isAdmin: true, isActivated: true });
     
-    toast({ title: "Admin Added", description: `${name} has been added as an administrator.` });
+    toast({ title: "Admin Added", description: `${userDoc.data().name} has been added as an administrator.` });
+    fetchAdmins(); // Refresh admin list
     adminManagementForm.reset();
   };
 
-  const handleRemoveAdmin = (emailToRemove: string) => {
-    if (initialAdminEmails.includes(emailToRemove)) {
+  const handleRemoveAdmin = async (emailToRemove: string) => {
+    const lowercasedEmail = emailToRemove.toLowerCase();
+    if (initialAdminEmails.includes(lowercasedEmail)) {
       toast({ title: "Cannot Remove Owner", description: "The original owner accounts cannot be removed.", variant: "destructive" });
       return;
     }
-    const updatedAdmins = admins.filter(admin => admin.email !== emailToRemove);
-    const updatedAdminEmails = updatedAdmins.map(admin => admin.email);
-    localStorage.setItem("admin_emails", JSON.stringify(updatedAdminEmails));
-    setAdmins(updatedAdmins);
+    
+    const usersRef = collection(db, "users");
+    const q = query(usersRef, where("email", "==", lowercasedEmail));
+    const querySnapshot = await getDocs(q);
+
+    if (querySnapshot.empty) {
+        toast({ title: "User not found", variant: "destructive" });
+        return;
+    }
+
+    const userDoc = querySnapshot.docs[0];
+    await updateDoc(userDoc.ref, { isAdmin: false });
+
     toast({ title: "Admin Removed", description: `The administrator has been removed.` });
+    fetchAdmins(); // Refresh admin list
   };
 
 
@@ -176,9 +171,9 @@ export default function AdminClient() {
       
        <Alert variant="destructive">
             <UserCog className="h-4 w-4" />
-            <AlertTitle>Simulation Notice</AlertTitle>
+            <AlertTitle>Security & Data Management</AlertTitle>
             <AlertDescription>
-              Administrator management is simulated using browser storage. In a production environment, this data must be managed by a secure backend database to ensure security and persistence.
+              Administrator and user data is now managed in Firebase Firestore. Activation keys are temporarily stored in local storage for simplicity in this prototype. In a production app, keys should be sent directly to users (e.g., via email).
             </AlertDescription>
         </Alert>
         
@@ -286,13 +281,13 @@ export default function AdminClient() {
                 <Label>Current Admins</Label>
                 <div className="space-y-2 rounded-md border p-3">
                    {admins.map(admin => (
-                       <div key={admin.email} className="flex items-center justify-between">
+                       <div key={admin.uid} className="flex items-center justify-between">
                             <div className="flex items-center gap-2">
                                 <span className="text-sm font-medium">{admin.name}</span>
-                                {isMainAdmin && <span className="text-sm text-muted-foreground">({admin.email})</span>}
-                                {admin.isOwner && <Badge variant="secondary">Owner</Badge>}
+                                {currentAppUser?.isAdmin && <span className="text-sm text-muted-foreground">({admin.email})</span>}
+                                {initialAdminEmails.includes(admin.email?.toLowerCase() || '') && <Badge variant="secondary">Owner</Badge>}
                             </div>
-                            <Button variant="ghost" size="icon" onClick={() => handleRemoveAdmin(admin.email)} disabled={admin.isOwner || !isMainAdmin}>
+                            <Button variant="ghost" size="icon" onClick={() => handleRemoveAdmin(admin.email || '')} disabled={initialAdminEmails.includes(admin.email?.toLowerCase() || '') || !currentAppUser?.isAdmin}>
                                 <Trash2 className="h-4 w-4 text-destructive" />
                                 <span className="sr-only">Remove {admin.name}</span>
                             </Button>
@@ -300,7 +295,7 @@ export default function AdminClient() {
                    ))}
                 </div>
             </div>
-             {isMainAdmin && (
+             {currentAppUser?.isAdmin && (
                 <Form {...adminManagementForm}>
                     <form onSubmit={adminManagementForm.handleSubmit(handleAddAdmin)} className="flex items-end gap-2">
                         <FormField
